@@ -1,0 +1,8 @@
+pandas
+openpyxl
+python-docx
+tkcalendar
+tkinterdnd2
+customtkinter
+pillow
+tkcalendar
