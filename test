@@ -1,0 +1,156 @@
+{{App_Name}}  = # Web Application Name like hrms portal/attendace
+{{type}}  = # means is it external or internal web Application
+{{Audit_Period}}   # means starting date to end date for example 17-01-2026 - 21-02-2026
+{{Client_Name}}  # means company name or organization name for example Test Bank Pvt. Ltd.
+{{environment}}  # means UAT or Production
+{{URL}}         # web url or target url
+{{high}}       # means High Severity Issues
+{{medium}}     # means Medium Severity Issues
+{{low}}        # means Low Severity Issues
+{{total}}     # means Total Findings
+{{method}}    # Grey box or Black box
+
+
+{% for item in observations %}
+Sr. No.	{{item.sr_no}}
+Affected URL	{{item.affected_url}}
+Observation/ Vulnerability Title	{{item.title}}
+Detailed observation / Vulnerable point	{{item.description}}
+CVE/CWE	{{item.cve}}
+Impact	{{item.impact}}
+Severity	{{item.severity}}
+Recommendation	{{item.recommendation}}
+Reference	{{item.reference}}
+New or Repeat observation	New Observation
+
+<!-- POC will be inserted here during post-processing -->
+
+{% if not loop.last %}
+{% endif %}
+{% endfor %}
+
+
+# Security Report Generator — v2.0
+
+## Architecture
+
+```
+project/
+├── report_engine.py   ← ★ CENTRALIZED ENGINE (all report logic lives here)
+├── gui_app.py         ← PyQt6 GUI  (imports report_engine)
+├── main.py            ← CLI wrapper (imports report_engine)
+├── build_exe.spec     ← PyInstaller build config
+├── templates/
+│   ├── web_template.docx
+│   ├── api_template.docx
+│   └── mobile_template.docx
+└── src/
+    ├── excel_reader.py
+    └── poc_finder.py
+```
+
+### Key design principle
+
+**`report_engine.py` is the single source of truth.**  
+GUI, CLI, scripts, scheduled jobs — all call the same `ReportEngine` class.  
+No logic is duplicated. Bug fixes and new features only need to be made in one place.
+
+---
+
+## Quick Start
+
+### GUI (recommended)
+```bash
+pip install PyQt6 python-docx docxtpl pandas openpyxl
+python gui_app.py
+```
+
+### CLI
+```bash
+python main.py -s findings.xlsx -p poc_screenshots/ -t web -env production
+```
+
+### Use engine directly in your own script
+```python
+from report_engine import ReportEngine, ReportConfig
+
+config = ReportConfig(
+    client_name  = "Acme Bank Pvt. Ltd.",
+    app_name     = "Internet Banking Portal",
+    app_type     = "External Web Application",
+    audit_period = "01-01-2026 - 15-01-2026",
+    url          = "https://banking.acme.com",
+    method       = "Grey Box",
+    report_type  = "Web",        # Web | Api | Mobile
+    environment  = "Production", # Production | Uat
+    excel_file   = "findings.xlsx",
+    poc_folder   = "poc/",
+    output_file  = "report.docx",
+)
+
+engine = ReportEngine(
+    config,
+    progress_callback=lambda pct: print(f"{pct}%"),
+    log_callback=print,
+)
+result = engine.run()
+
+if result.success:
+    print(f"Saved to: {result.output_path}")
+```
+
+---
+
+## GUI Features
+
+| Feature | Details |
+|---|---|
+| Live log output | All engine logs stream to the right panel in real time |
+| Progress bar | 0→100% filled as the engine runs each stage |
+| Save profile | Saves all form fields to a `.json` file for reuse |
+| Load profile | Restores a saved profile back into the form |
+| Background thread | UI stays responsive during generation |
+| Dark theme | Modern dark UI with colour-coded severity |
+
+---
+
+## Build distributable .exe (Windows)
+
+```bash
+pip install pyinstaller
+pyinstaller build_exe.spec
+# Output: dist/ReportGenerator.exe — share this single file
+```
+
+---
+
+## ReportConfig fields
+
+| Field | Default | Description |
+|---|---|---|
+| `client_name` | `""` | Client organisation name |
+| `app_name` | `""` | Application name |
+| `app_type` | `""` | e.g. Internal/External Web Application |
+| `audit_period` | `""` | e.g. `01-01-2026 - 15-01-2026` |
+| `url` | `""` | Target URL |
+| `method` | `""` | Grey Box / Black Box |
+| `report_type` | `"Web"` | `Web` / `Api` / `Mobile` |
+| `environment` | `"Production"` | `Production` / `Uat` |
+| `excel_file` | `""` | Path to findings `.xlsx` |
+| `poc_folder` | `""` | Path to POC screenshots folder |
+| `output_file` | `""` | Output path (auto-named if blank) |
+| `template_base` | `"templates"` | Folder containing `*_template.docx` |
+
+---
+
+## What changed from v1 (main.py only)
+
+| v1 | v2 |
+|---|---|
+| All logic in `main.py` | All logic in `report_engine.py` |
+| GUI used `os.environ` hacks | GUI calls `ReportEngine` directly |
+| No progress reporting | `progress_callback` 0→100% |
+| Blocking execution | Background `QThread` — UI never freezes |
+| No profiles | Save/load JSON profiles |
+
+pyinstaller --onefile --windowed --name "ReportGenerator" --add-data "templates;templates" --add-data "src;src" --paths "." gui/main_gui.py
