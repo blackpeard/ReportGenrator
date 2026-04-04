@@ -32,7 +32,7 @@ import threading
 from pathlib import Path
 
 from PyQt6.QtCore import (
-    QObject, QThread, Qt, QTimer, pyqtSignal, pyqtSlot,
+    QObject, QThread, Qt, QTimer, pyqtSignal, pyqtSlot, QDate
 )
 from PyQt6.QtGui import QColor, QFont, QIcon, QPalette, QTextCharFormat
 from PyQt6.QtWidgets import (
@@ -40,7 +40,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
     QSizePolicy, QSpacerItem, QSplitter, QStatusBar,
-    QVBoxLayout, QWidget, QScrollArea, QFrame,
+    QVBoxLayout, QWidget, QScrollArea, QFrame, QDateEdit
 )
 
 # Add local paths
@@ -50,8 +50,8 @@ from report_engine import ReportConfig, ReportEngine, ReportResult
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-APP_NAME    = "Security Report Generator"
-APP_VERSION = "2.0.0"
+APP_NAME    = "Advance Report_Generator Machine"
+APP_VERSION = "2.1.0"
 PROFILE_DIR = Path.home() / ".report_generator" / "profiles"
 PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -391,6 +391,9 @@ class MainWindow(QMainWindow):
 
         scroll.setWidget(container)
         return scroll
+    
+    # def _second_page(self) -> 
+    
 
     def _group_report_settings(self) -> QGroupBox:
         grp = QGroupBox("Report Settings")
@@ -416,15 +419,32 @@ class MainWindow(QMainWindow):
 
         self.in_client     = QLineEdit(); self.in_client.setPlaceholderText("e.g. Acme Bank Pvt. Ltd.")
         self.in_app        = QLineEdit(); self.in_app.setPlaceholderText("e.g. Internet Banking Portal")
-        self.in_app_type   = QLineEdit(); self.in_app_type.setPlaceholderText("e.g. External Web Application")
-        self.in_period     = QLineEdit(); self.in_period.setPlaceholderText("e.g. 01-01-2026 - 15-01-2026")
+        self.in_app_type   = QComboBox(); self.in_app_type.addItems(["External", "Internal"]); self.in_app_type.setPlaceholderText("e.g. External/Internal")
+
+        date_layout = QHBoxLayout();
+        self.in_start_date = QDateEdit();
+        self.in_start_date.setCalendarPopup(True)
+        self.in_start_date.setDate(QDate.currentDate())
+        self.in_start_date.setDisplayFormat("dd-MM-yyyy")
+
+        self.in_end_date = QDateEdit()
+        self.in_end_date.setCalendarPopup(True)
+        self.in_end_date.setDate(QDate.currentDate().addDays(14))
+        self.in_end_date.setDisplayFormat("dd-MM-yyyy")
+
+        date_layout.addWidget(self.in_start_date)
+        date_layout.addWidget(QLabel("to"))
+        date_layout.addWidget(self.in_end_date)
+        date_layout.addStretch()
+
+        # self.in_period     = QLineEdit(); self.in_period.setPlaceholderText("e.g. 01-01-2026 - 15-01-2026")
         self.in_url        = QLineEdit(); self.in_url.setPlaceholderText("https://example.com")
-        self.in_method     = QLineEdit(); self.in_method.setPlaceholderText("Grey Box / Black Box")
+        self.in_method     = QComboBox(); self.in_method.addItems(["Grey Box", "Black Box", "White Box"]); self.in_method.setPlaceholderText("Grey Box / Black Box")
 
         form.addRow("Client Name:",    self.in_client)
         form.addRow("App Name:",       self.in_app)
         form.addRow("App Type:",       self.in_app_type)
-        form.addRow("Audit Period:",   self.in_period)
+        form.addRow("Audit Period:",   date_layout)
         form.addRow("Target URL:",     self.in_url)
         form.addRow("Test Method:",    self.in_method)
 
@@ -547,19 +567,23 @@ class MainWindow(QMainWindow):
         if errors:
             QMessageBox.warning(self, "Validation Error", "\n".join(errors))
             return None
+        
+        start_date = self.in_start_date.date().toString("dd-MM-yyyy")
+        end_date = self.in_end_date.date().toString("dd-MM-yyyy")
+        audit_period = f"{start_date} - {end_date}"
 
         return ReportConfig(
             client_name  = self.in_client.text().strip(),
             app_name     = self.in_app.text().strip(),
-            app_type     = self.in_app_type.text().strip(),
-            audit_period = self.in_period.text().strip(),
+            app_type     = self.in_app_type.currentText().strip(),
             url          = self.in_url.text().strip(),
-            method       = self.in_method.text().strip(),
+            method       = self.in_method.currentText().strip(),
             report_type  = self.cmb_type.currentText(),
             environment  = self.cmb_env.currentText(),
             excel_file   = excel,
             poc_folder   = self.pick_poc.text(),
             output_file  = self.pick_output.text().strip(),
+            audit_period = audit_period
         )
 
     @pyqtSlot(str)
@@ -601,10 +625,9 @@ class MainWindow(QMainWindow):
         return {
             "client_name":  self.in_client.text(),
             "app_name":     self.in_app.text(),
-            "app_type":     self.in_app_type.text(),
-            "audit_period": self.in_period.text(),
+            "app_type":     self.in_app_type.currentText(),
             "url":          self.in_url.text(),
-            "method":       self.in_method.text(),
+            "method":       self.in_method.currentText(),
             "report_type":  self.cmb_type.currentText(),
             "environment":  self.cmb_env.currentText(),
             "excel_file":   self.pick_excel.text(),
@@ -615,8 +638,9 @@ class MainWindow(QMainWindow):
     def _apply_profile_data(self, data: dict):
         self.in_client.setText(data.get("client_name", ""))
         self.in_app.setText(data.get("app_name", ""))
-        self.in_app_type.setText(data.get("app_type", ""))
-        self.in_period.setText(data.get("audit_period", ""))
+
+        self.in_app_type.setCurrentText(data.get("app_type", ""))
+
         self.in_url.setText(data.get("url", ""))
         self.in_method.setText(data.get("method", ""))
         idx = self.cmb_type.findText(data.get("report_type", "Web"))
