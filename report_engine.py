@@ -363,10 +363,11 @@ class ReportEngine:
             data = reader.read_all()
             
             observations = data['observations']
-
+    
         
             excel_scope = data.get('scope', [])
             limitation = data['limitation']
+            
             
             index_df = reader.read_index_sheet()
             report_name = reader.extract_report_name(index_df)
@@ -398,13 +399,36 @@ class ReportEngine:
         self._log(f"📊 Critical: {critical} High: {high}  Medium: {medium}  Low: {low}  Total: {total}")
 
         # ── 5. POC scanner ────────────────────────────────────────────────────
+      
         poc_finder = POCFinder()
-        if cfg.poc_folder and os.path.exists(cfg.poc_folder):
-            poc_finder.scan_folder(cfg.poc_folder)
-            self._log(f"🖼️  POC folders: {len(poc_finder.get_all_vulnerability_folders())}")
-        elif cfg.poc_folder:
-            self._log(f"⚠️  POC folder not found: {cfg.poc_folder}")
-        self._progress(45)
+
+        excel_pocs_loaded = False
+        if not cfg.is_manual_mode:
+            try:
+                excel_pocs_loaded = poc_finder.load_pocs_from_excel(cfg.excel_file)
+            except Exception as e:
+                self._log(f"⚠️  Excel POC load failed: {e}")
+
+        if excel_pocs_loaded:
+            self._log("✅ Using POCs from Excel POC sheet")
+            for obs in observations:
+                vuln_title = obs.get("title", "").strip()
+                ordered_items = poc_finder.get_excel_poc_items_by_vulnerability(vuln_title)
+                obs['_poc_items'] = ordered_items
+                if ordered_items:
+                    self._log(f"    ✓ {len(ordered_items)} POC items matched → {vuln_title[:40]}")
+                else:
+                    self._log(f"    ⚠️  No POC items matched → {vuln_title[:40]}")
+        else:
+            # Fallback — folder-based POC finder
+            self._log("📁 Excel POC sheet not found — trying POC folder...")
+            if cfg.poc_folder and os.path.exists(cfg.poc_folder):
+                poc_finder.scan_folder(cfg.poc_folder)
+                self._log(f"🖼️  POC folders found: {len(poc_finder.get_all_vulnerability_folders())}")
+            elif cfg.poc_folder:
+                self._log(f"⚠️  POC folder not found: {cfg.poc_folder}")
+            else:
+                self._log("ℹ️  No POC source provided — skipping POC insertion")
 
         # ── 6. Build context ──────────────────────────────────────────────────
         context = {
@@ -497,10 +521,20 @@ class ReportEngine:
             self._build_scope_table(doc, cfg.scope, cfg.app_type, cfg.environment)
 
         # ── 9. POC images ─────────────────────────────────────────────────────
-        if cfg.poc_folder and os.path.exists(cfg.poc_folder) and observations:
+        has_excel_pocs  = excel_pocs_loaded
+        has_folder_pocs = bool(cfg.poc_folder and os.path.exists(cfg.poc_folder))
+
+        if (has_excel_pocs or has_folder_pocs) and observations:
             self._log("🖼️  Inserting POC screenshots...")
+            self._log(f"DEBUG has_excel_pocs={has_excel_pocs} has_folder_pocs={has_folder_pocs}")
+            self._log(f"DEBUG observations count={len(observations)}")
+            for idx, obs in enumerate(observations):
+                self._log(f"DEBUG obs[{idx}] title='{obs.get('title','')}' _poc_images={obs.get('_poc_images', [])}")
+            # Check if marker exists in document
+            marker = "<!-- POC will be inserted here during post-processing -->"
+            marker_count = sum(1 for p in doc.paragraphs if marker in p.text)
+            self._log(f"DEBUG marker found in {marker_count} paragraphs")
             self._insert_pocs(doc, observations, poc_finder)
-        self._progress(90)
 
         # ── 10. Save ──────────────────────────────────────────────────────────
         output_path = cfg.resolved_output(safe_name)
@@ -1011,22 +1045,20 @@ class ReportEngine:
 
    
 
-    def _insert_pocs(self, doc: Document, observations: list[dict],
-                     poc_finder: POCFinder):
+    def _insert_pocs(self, doc: Document, observations: list[dict], poc_finder: POCFinder):
         marker = "<!-- POC will be inserted here during post-processing -->"
         obs_index = 0
         i = 0
 
-        # Define max size: 13cm height, 23cm width
         MAX_HEIGHT_CM = 13
         MAX_WIDTH_CM = 21
-        # Convert cm to inches (1 inch = 2.54 cm)
         MAX_HEIGHT_INCHES = MAX_HEIGHT_CM / 2.54
         MAX_WIDTH_INCHES = MAX_WIDTH_CM / 2.54
 
-        from docx.shared import Inches
+        from docx.shared import Inches, Pt
         from docx.oxml import parse_xml
         from PIL import Image
+        import os
 
         while i < len(doc.paragraphs):
             para = doc.paragraphs[i]
@@ -1035,65 +1067,89 @@ class ReportEngine:
                 para._element.getparent().remove(para._element)
 
                 if vuln_title:
-                    poc_images = poc_finder.get_pocs_by_vulnerability(vuln_title)
-                    for img_path in poc_images:
-                        try:
-                            # Get image dimensions
-                            with Image.open(img_path) as img:
-                                orig_width, orig_height = img.size
-
-                            # Convert to inches (96 DPI approximation)
-                            orig_width_inches = orig_width / 96
-                            orig_height_inches = orig_height / 96
-
-                            # Check if image exceeds max dimensions
-                            needs_resize = (
-                                orig_width_inches > MAX_WIDTH_INCHES
-                                or orig_height_inches > MAX_HEIGHT_INCHES
-                            )
-
-                            # Create paragraph for image
+                    # Get ordered items from Excel
+                    ordered_items = poc_finder.get_excel_poc_items_by_vulnerability(vuln_title)
+                    
+                    # If no Excel POCs, try folder-based
+                    if not ordered_items:
+                        folder_images = poc_finder.get_pocs_by_vulnerability(vuln_title)
+                        for img_path in folder_images:
+                            ordered_items.append(('image', img_path))
+                    
+                    step_counter = 1
+                    
+                    for item in ordered_items:
+                        item_type = item[0]
+                        item_data = item[1]
+                        
+                        if item_type == 'step':
                             p = doc.paragraphs[i].insert_paragraph_before()
-                            run = p.add_run()
-
-                            if needs_resize:
-                                # Scale to fit within max dimensions, preserve aspect ratio
-                                width_ratio = MAX_WIDTH_INCHES / orig_width_inches
-                                height_ratio = MAX_HEIGHT_INCHES / orig_height_inches
-                                scale = min(width_ratio, height_ratio)
-
-                                new_width_inches = orig_width_inches * scale
-                                new_height_inches = orig_height_inches * scale
-
-                                run.add_picture(
-                                    img_path,
-                                    width=Inches(new_width_inches),
-                                    height=Inches(new_height_inches),
-                                )
+                            step_text = item_data
+                            if not step_text.lower().startswith("step"):
+                                run = p.add_run(f"Step {step_counter}: {step_text}")
+                                step_counter += 1
                             else:
-                                # Keep original size
-                                run.add_picture(img_path)
-
-                            # Add 1pt black border around the image
-                            try:
-                                bdr_xml = (
-                                    '<w:bdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
-                                    'w:val="single" w:sz="8" w:space="0" w:color="000000"/>'
-                                )
-                                run._element.get_or_add_rPr().append(parse_xml(bdr_xml))
-                            except Exception as e:
-                                self._log(f"    ⚠️  Could not add border to {img_path}: {e}")
-
+                                run = p.add_run(step_text)
+                            run.font.name = "Calibri"
+                            run.font.size = Pt(10)
                             i += 1
+                        
+                        elif item_type == 'image':
+                            img_path = item_data
+                            if os.path.exists(img_path):
+                                try:
+                                    with Image.open(img_path) as img:
+                                        orig_width, orig_height = img.size
 
-                        except Exception as e:
-                            self._log(f"    ⚠️  Could not add image {img_path}: {e}")
-                            # Add placeholder text instead
-                            p = doc.paragraphs[i].insert_paragraph_before()
-                            p.add_run(f"[POC image: {os.path.basename(img_path)}]")
-                            i += 1
+                                    orig_width_inches = orig_width / 96
+                                    orig_height_inches = orig_height / 96
 
-                    self._log(f"    ✓ POCs added: {vuln_title[:40]}")
+                                    needs_resize = (
+                                        orig_width_inches > MAX_WIDTH_INCHES
+                                        or orig_height_inches > MAX_HEIGHT_INCHES
+                                    )
+
+                                    p = doc.paragraphs[i].insert_paragraph_before()
+                                    run = p.add_run()
+
+                                    if needs_resize:
+                                        width_ratio = MAX_WIDTH_INCHES / orig_width_inches
+                                        height_ratio = MAX_HEIGHT_INCHES / orig_height_inches
+                                        scale = min(width_ratio, height_ratio)
+                                        new_width_inches = orig_width_inches * scale
+                                        new_height_inches = orig_height_inches * scale
+                                        run.add_picture(
+                                            img_path,
+                                            width=Inches(new_width_inches),
+                                            height=Inches(new_height_inches),
+                                        )
+                                    else:
+                                        run.add_picture(img_path)
+
+                                    try:
+                                        bdr_xml = (
+                                            '<w:bdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+                                            'w:val="single" w:sz="8" w:space="0" w:color="000000"/>'
+                                        )
+                                        run._element.get_or_add_rPr().append(parse_xml(bdr_xml))
+                                    except Exception as e:
+                                        self._log(f"    ⚠️  Could not add border to {img_path}: {e}")
+
+                                    i += 1
+
+                                except Exception as e:
+                                    self._log(f"    ⚠️  Could not add image {img_path}: {e}")
+                                    p = doc.paragraphs[i].insert_paragraph_before()
+                                    p.add_run(f"[POC image: {os.path.basename(img_path)}]")
+                                    i += 1
+                            else:
+                                self._log(f"    ⚠️  Image not found: {img_path}")
+
+                    if ordered_items:
+                        self._log(f"    ✓ POCs added: {vuln_title[:40]}")
+                    else:
+                        self._log(f"    ⚠️  No POCs for: {vuln_title[:40]}")
+                    
                     obs_index += 1
                 else:
                     obs_index += 1
