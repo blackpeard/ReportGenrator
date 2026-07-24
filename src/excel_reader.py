@@ -115,6 +115,8 @@ class ExcelReader:
         # Detect column types based on header names and content
         col_mapping = self._detect_column_types(df, columns)
         
+        print(f"DEBUG: col_mapping = {col_mapping}")
+        
         # Convert each row to observation dict
         for idx, row in df.iterrows():
             obs = {}
@@ -151,21 +153,27 @@ class ExcelReader:
             'poc': None,
             'recommendation': None,
             'impact': None,
-            'status': None
+            'affected_ip': None,
+            'status': None,
+            'failure': None,
+            'checkid': None
         }
         
         # Common patterns for each field
         patterns = {
-            'sr_no': ['sr', 's.no', 'sno', 'serial', 'no.', 'id', '#'],
+            'sr_no': ['sr', 's.no', 'sno', 'serial', 'no.' '#'],
             'severity': ['severity', 'risk', 'criticality', 'priority', 'level'],
             'title': ['title', 'name', 'vulnerability', 'finding', 'issue', 'heading'],
             'description': ['description', 'desc', 'details', 'detail', 'observation'],
             'affected_url': ['url', 'affected', 'endpoint', 'path', 'location', 'page'],
-            'cve': ['cve', 'cwe', 'vulnerability id', 'id', 'reference'],
+            'cve': ['cve', 'cwe', 'vulnerability', 'reference'],
             'poc': ['poc', 'proof', 'screenshot', 'evidence', 'image', 'attachment'],
             'recommendation': ['recommendation', 'fix', 'remediation', 'solution', 'mitigation'],
             'impact': ['impact', 'effect', 'consequence'],
-            'status': ['status', 'state']
+            'affected_ip': ['ip', 'address', 'host', 'machine'],
+            'status': ['status', 'state'],
+            'failure': ['failure', 'cause of failure', 'cause', 'non-compliance', 'violation', 'gap'],
+            'checkid': ['Check id', 'checkid', 'check_id', 'control id', 'identifier']
         }
         
         # First pass: match by column name
@@ -180,7 +188,7 @@ class ExcelReader:
         for field, field_patterns in patterns.items():
             if mapping[field] is None:
                 # Look at first few rows to detect content
-                for col_name in df.columns[:10]:  # Check first 10 columns
+                for col_name in df.columns[:13]:  # Check first 13 columns
                     sample_values = df[col_name].dropna().astype(str).head(3).tolist()
                     sample_text = ' '.join(sample_values).lower()
                     
@@ -192,6 +200,11 @@ class ExcelReader:
                         mapping[field] = col_name
                         break
                     elif field == 'url' and any('http' in text or 'https' in text or 'www.' in text for text in sample_values):
+                        mapping[field] = col_name
+                        break
+                    elif field == 'affected_ip' and any('ip' in text or 'address' in text for text in sample_values):
+                        mapping[field] = col_name
+                    elif field == 'checkid' and any('check' in text or 'control' in text for text in sample_values):
                         mapping[field] = col_name
                         break
         
@@ -225,9 +238,52 @@ class ExcelReader:
         
         return os.path.splitext(os.path.basename(self.excel_file))[0]
     
+    def read_all(self):
+        """Read ALL sheets and return combined data."""
+        index_df = self.read_index_sheet()
+        scope_df = self.read_scope_sheet()
+        limitation_df = self.read_limitation_sheet()
+        observations = self.read_observations()
+        
+        
+        # Parse Index
+        index_data = {}
+        if not index_df.empty:
+            for _, row in index_df.iterrows():
+                if pd.notna(row[0]) and pd.notna(row[1]):
+                    key = str(row[0]).strip().lower().replace(" ", "_")
+                    index_data[key] = str(row[1]).strip()
+        
+        # Parse Scope
+        scope = []
+        if not scope_df.empty:
+            for _, row in scope_df.iterrows():
+                if pd.notna(row[0]):
+                    val = str(row[0]).strip()
+                    if val and not val.startswith("e.g."):
+                        scope.append(val)
+        
+        # Parse Limitation
+        limitation = []
+        if not limitation_df.empty:
+            for _, row in limitation_df.iterrows():
+                if pd.notna(row[0]):
+                    val = str(row[0]).strip()
+                    if val and not val.startswith("e.g."):
+                        limitation.append(val)
+        
+        return {
+            'index': index_data,
+            'scope': scope,
+            'limitation': limitation,
+            'observations': observations,
+            
+        }
+    
     def extract_summary_stats(self, index_df):
         """Extract summary statistics from index sheet"""
         stats = {
+            'critical': '0',
             'high': '0',
             'medium': '0', 
             'low': '0',
